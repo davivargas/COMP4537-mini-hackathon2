@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- Only our own scripts and styles may load; no inline script can run. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src https: http://localhost:3000; base-uri 'none'; form-action 'none'">
+  <meta name="referrer" content="no-referrer">
+  <title>Login</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="config.js" defer></script>
+  <script src="app.js" defer></script>
+</head>
+<body data-page="login">
+  <main class="login">
+    <p class="eyebrow">Admin sign-in</p>
+    <h1>Team <span id="team" class="team" data-team></span></h1>
+    <form id="login-form" autocomplete="off">
+      <label for="username">Username</label>
+      <input id="username" name="username" type="text" required maxlength="64" autocapitalize="none" autocorrect="off" spellcheck="false" autofocus>
+      <label for="password">Password</label>
+      <input id="password" name="password" type="password" required maxlength="64">
+      <button id="login-button" type="submit">Login</button>
+      <p id="error" class="error" role="alert" hidden></p>
+    </form>
+  </main>
+</body>
+</html>

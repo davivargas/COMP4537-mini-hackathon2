@@ -1,0 +1,16 @@
+{
+  "name": "password-hackathon-api",
+  "version": "1.0.0",
+  "private": true,
+  "description": "JWT + HttpOnly cookie API written with Node.js built-in modules only",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --env-file-if-exists=.env server.js",
+    "test": "node --test",
+    "credentials": "node scripts/generate-credentials.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src https: http://localhost:3000; base-uri 'none'; form-action 'none'">
+  <meta name="referrer" content="no-referrer">
+  <title>Admin Landing Page</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="config.js" defer></script>
+  <script src="app.js" defer></script>
+</head>
+<body data-page="admin">
+  <header>
+    <span class="brand">Team <span class="team" data-team></span></span>
+    <nav aria-label="Main">
+      <a href="admin.html" aria-current="page">Admin Landing Page</a>
+      <a href="page1.html">Page 1</a>
+      <a href="page2.html">Page 2</a>
+      <button id="logout" type="button">Logout</button>
+    </nav>
+  </header>
+  <p id="status" class="status" role="status">Loading…</p>
+  <!-- Stays hidden until the API confirms the visitor is logged in. -->
+  <main id="content" hidden>
+    <p class="eyebrow">Admin Landing Page</p>
+    <p id="welcome" class="welcome"></p>
+  </main>
+</body>
+</html>
