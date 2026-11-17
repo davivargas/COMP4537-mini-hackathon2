@@ -1,0 +1,40 @@
+# Publishes the frontend/ folder to GitHub Pages at
+#   https://davivargas.github.io/COMP4537-mini-hackathon2/prjT1/
+# The prjT1 folder is there so the client URL contains the team number.
+name: Deploy client to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "frontend/**"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}prjT1/
+    steps:
+      - uses: actions/checkout@v4
+      - name: Put the client in a folder named after the team
+        run: |
+          mkdir -p _site
+          cp -r frontend _site/prjT1
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+      - id: deployment
+        uses: actions/deploy-pages@v4
