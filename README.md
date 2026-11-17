@@ -83,22 +83,27 @@ Serve `frontend/` on port 5500 (VS Code Live Server does this) and open `http://
 
 ## Deploy
 
-**API** (any always-on Node host; lab 5 used Railway):
+Where it is deployed:
 
-1. Root directory `backend`, start command `npm start`.
-2. Give the service a domain that contains the team number, for example `prjT1-api.up.railway.app`.
-3. Run `npm run credentials` once and set the printed `JWT_KEY`. Never change it afterwards: that would invalidate issued tokens, which the rules forbid.
-4. Set `ALLOWED_ORIGINS` to the client origin exactly, for example `https://prjT1.netlify.app` (no trailing slash).
-5. Leave `ADMIN_PASSWORD` and `SECRET` unset for Phase 1; the defaults are `BCIT12` and `defaultSecret`.
-6. Make sure the host does not sleep the app when idle. A cold start over 5 s is a defeat.
-7. Open the client once, then read the API log line `First request: X-Forwarded-For="..."`. The visitor's real address must be the last entry. If a proxy address is last instead, set `TRUSTED_PROXY_HOPS` to its position counted from the right (2 for second-to-last). If the header is empty, set it to 0.
+| Part   | URL                                                           | Host                                               |
+| ------ | ------------------------------------------------------------- | -------------------------------------------------- |
+| Client | `https://davivargas.github.io/COMP4537-mini-hackathon2/prjT1/` | GitHub Pages                                       |
+| API    | `https://prjt1-api-production.up.railway.app`                 | Railway, service `prjt1-api` in project `comp4537` |
 
-**Client** (any static host: Netlify, Cloudflare Pages, GitHub Pages):
+Two different hosts, so two different origins, as the rules require.
 
-1. Edit `frontend/config.js`: set `TEAM` and `API_URL`.
-2. Publish the `frontend` folder. The site name or path must contain the team number.
+**API on Railway.** The service builds from this repo with root directory `/backend` and runs `npm start`. Its variables:
 
-Then check on the deployed site, in a normal window and a private window (and Safari if anyone has it): log in, see the secret, refresh, visit both pages, log out.
+- `JWT_KEY`: 64 random characters, generated once. Never change it: that would invalidate issued tokens, which the rules forbid.
+- `ALLOWED_ORIGINS=https://davivargas.github.io`: the client's origin. An origin is scheme + host only, so there is no path and no trailing slash.
+- `TRUSTED_PROXY_HOPS=2`: Railway sends `X-Forwarded-For: <visitor>, <Railway edge>`, so the visitor is second from the right. We checked this in the API log line `First request: X-Forwarded-For="..."`, and checked that Railway throws away an `X-Forwarded-For` the visitor sends, so the address cannot be faked. With the wrong value every visitor would look like one address and share one rate limit.
+- `ADMIN_PASSWORD` and `SECRET`: not set for Phase 1, so the defaults `BCIT12` and `defaultSecret` apply.
+
+Railway redeploys the API (a restart) when a push changes anything under `backend/`, and only then. **After Phase 2, do not push changes to `backend/`.**
+
+**Client on GitHub Pages.** `.github/workflows/pages.yml` copies `frontend/` into a folder named `prjT1` and publishes it on every push that changes `frontend/`. The folder is why the URL contains the team number. `frontend/config.js` holds `TEAM` and `API_URL`.
+
+After any change, check on the deployed site, in a normal window and a private window (and Safari if anyone has it): log in, see the secret, refresh, visit both pages, log out.
 
 ## Hackathon runbook
 
@@ -107,8 +112,8 @@ Then check on the deployed site, in a normal window and a private window (and Sa
 **Phase 2 — change credentials (5 minutes).**
 
 1. Before class, run `npm run credentials` and keep the output private.
-2. In the API host's variables set `ADMIN_PASSWORD` and `SECRET` to the generated values. Do not touch `JWT_KEY`.
-3. Save. The redeploy is the one permitted restart.
+2. In Railway, open project `comp4537` → service `prjt1-api` → Variables. Add `ADMIN_PASSWORD` and `SECRET` with the generated values. Do not touch `JWT_KEY`.
+3. Press Deploy once, after both are entered. That redeploy is the one permitted restart; it takes about 40 s.
 4. Log out, log in with the new password, confirm the new secret is shown. The API log should now say `Login rate limit: 50 per 10 s per address`.
 5. Post the READY message before the deadline.
 
