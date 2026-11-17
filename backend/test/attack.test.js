@@ -150,6 +150,7 @@ test("ATTACK replay: a Phase-1 token cannot read the Phase-2 secret", async () =
     // The old password is dead, so no fresh token can be minted with it.
     const oldPw = await login(phase2.base, "BCIT12");
     assert.equal(oldPw.status, 401);
+    assert.equal(oldPw.headers.get("set-cookie"), null);
     assertNoLeak(oldPw, "old password");
 
     // Sanity: the real owner still sees the new secret.
@@ -304,13 +305,14 @@ test("Phase-2 server under attack", async (t) => {
     await t.test(
       "ATTACK probing: weird paths and methods leak nothing",
       async () => {
+        // (/.env, /api/secret and friends are decoys now: see the honeypot tests.)
         const probes = [
-          ["GET", "/.env"],
-          ["GET", "/../.env"],
-          ["GET", "/%2e%2e/.env"],
+          ["GET", "/.env.local"],
+          ["GET", "/.git/config"],
           ["GET", "/server.js"],
+          ["GET", "/app.js"],
           ["GET", "/package.json"],
-          ["GET", "/api/secret"],
+          ["GET", "/api/users"],
           ["GET", "/api/admin/"],
           ["GET", "/API/ADMIN"],
           ["GET", "/api//admin"],
@@ -587,6 +589,204 @@ test("Phase-2 server under attack", async (t) => {
         );
       },
     );
+  } finally {
+    await srv.stop();
+  }
+});
+
+// ===========================================================================
+// ROUND 2: decoy endpoints, then deeper protocol-level attacks.
+// ===========================================================================
+const { DECOY_NOTICE } = require("../app");
+const PHASE2 = { ADMIN_PASSWORD: NEW_PASSWORD, SECRET: NEW_SECRET };
+const DECOYS = ["/.env", "/backup.json", "/robots.txt", "/api/debug", "/api/config", "/api/secret"];
+const adminView = (base, cookie) =>
+  hit(`${base}/api/admin`, { headers: { Cookie: cookie, Origin: ORIGIN } });
+
+test("DECOYS: every decoy says it is a decoy, answers fast and holds nothing real", async () => {
+  const srv = await bootServer(PHASE2);
+  const { base } = srv;
+  try {
+    for (const p of DECOYS) {
+      const r = await hit(`${base}${p}`);
+      assert.equal(r.status, 200, p);
+      assert.ok(r.text.includes(DECOY_NOTICE), `${p} is not labelled as a decoy`);
+      assertNoLeak(r, `decoy ${p}`);
+      assert.equal(r.text.includes(NEW_PASSWORD), false, `${p} leaks the password`);
+      assert.equal(r.text.includes(JWT_KEY), false, `${p} leaks the signing key`);
+      assert.ok(r.ms < 1000, `decoy ${p} slow: ${r.ms}ms`);
+    }
+    // No fake server fingerprint: nothing may suggest we use a framework.
+    assert.equal((await hit(`${base}/api/secret`)).headers.get("x-powered-by"), null);
+
+    // Values copied out of a decoy are useless against the real app.
+    const leakedKey = /^JWT_KEY=(.+)$/m.exec((await hit(`${base}/.env`)).text)[1];
+    const body = `${b64({ alg: "HS256", typ: "JWT" })}.${b64({ sub: "admin", secret: "x", exp: 9_999_999_999 })}`;
+    const sig = crypto.createHmac("sha256", leakedKey).update(body).digest("base64url");
+    assert.equal((await adminView(base, `__Host-token=${body}.${sig}`)).status, 401);
+    const leakedPassword = /^ADMIN_PASSWORD=(.+)$/m.exec((await hit(`${base}/.env`)).text)[1];
+    assert.equal((await login(base, leakedPassword)).status, 401);
+
+    // There is no bait login: every wrong password, the old default included,
+    // gets the proper error and no cookie.
+    for (const wrong of ["BCIT12", "bcit12", "password", "123456", "admin", "Qz7!pK", ""]) {
+      const r = await login(base, wrong);
+      assert.equal(r.status, 401, `wrong password ${JSON.stringify(wrong)}`);
+      assert.equal(r.headers.get("set-cookie"), null);
+    }
+    // The owner still gets the real secret, and required endpoints are untouched.
+    const owner = await adminView(base, cookieOf(await login(base, NEW_PASSWORD)));
+    assert.deepEqual(JSON.parse(owner.text), { secret: NEW_SECRET });
+    assert.equal((await hit(`${base}/health`)).status, 200);
+  } finally {
+    await srv.stop();
+  }
+});
+
+test("DECOYS: HONEYPOT=off removes them", async () => {
+  const srv = await bootServer({ ...PHASE2, HONEYPOT: "off" });
+  try {
+    for (const p of DECOYS) {
+      assert.equal((await hit(`${srv.base}${p}`)).status, 404, p);
+    }
+    const owner = await adminView(srv.base, cookieOf(await login(srv.base, NEW_PASSWORD)));
+    assert.deepEqual(JSON.parse(owner.text), { secret: NEW_SECRET });
+    assert.match(srv.logs(), /Decoy endpoints: off/);
+  } finally {
+    await srv.stop();
+  }
+});
+
+test("ROUND 2 protocol attacks", async (t) => {
+  const srv = await bootServer({ ...PHASE2, REQUEST_TIMEOUT_MS: "1500", HEADERS_TIMEOUT_MS: "1500" });
+  const { base, port } = srv;
+  const alive = async (label) => {
+    const r = await hit(`${base}/health`);
+    assert.equal(r.status, 200, `down after ${label}`);
+    assert.ok(r.ms < 1000, `slow after ${label}: ${r.ms}ms`);
+  };
+  const ownerCookie = cookieOf(await login(base, NEW_PASSWORD));
+  assert.ok(ownerCookie);
+
+  try {
+    await t.test("request smuggling: Content-Length together with Transfer-Encoding is refused", async () => {
+      const r = await rawExchange(
+        port,
+        "POST /api/login HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: 4\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\nGET /api/admin HTTP/1.1\r\nHost: x\r\n\r\n",
+        3000,
+      );
+      assert.match(r.received, /^HTTP\/1\.1 400/);
+      assert.equal(r.received.includes(NEW_SECRET), false);
+      await alive("smuggling");
+    });
+
+    await t.test("slow body: a login that never finishes its body is cut off", async () => {
+      const stalled = [];
+      for (let i = 0; i < 20; i += 1) {
+        stalled.push(rawExchange(
+          port,
+          'POST /api/login HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: 200\r\n\r\n{"username":"admin","pass',
+          8000,
+        ));
+      }
+      await new Promise((r) => setTimeout(r, 200));
+      await alive("slow bodies in flight");
+      for (const r of await Promise.all(stalled)) {
+        assert.ok(r.closedByServer, "slow-body socket never closed");
+        assert.ok(r.ms < 4500, `slow-body socket held ${r.ms.toFixed(0)}ms`);
+      }
+    });
+
+    await t.test("pipelining: 200 requests in one packet are all answered", async () => {
+      const one = "GET /health HTTP/1.1\r\nHost: x\r\n\r\n";
+      const last = "GET /health HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n";
+      const r = await rawExchange(port, one.repeat(199) + last, 5000);
+      assert.equal((r.received.match(/HTTP\/1\.1 200/g) || []).length, 200);
+      assert.ok(r.ms < RULE_LIMIT_MS);
+    });
+
+    await t.test("odd verbs and upgrades: WebSocket, CONNECT, TRACE, method override", async () => {
+      const ws = await rawExchange(port, "GET /api/admin HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n", 2500);
+      assert.equal(ws.received.includes("101 Switching"), false);
+      assert.equal(ws.received.includes(NEW_SECRET), false);
+      const connect = await rawExchange(port, "CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n", 2500);
+      assert.equal(/^HTTP\/1\.1 200/.test(connect.received), false);
+      const trace = await rawExchange(port, `TRACE /api/admin HTTP/1.1\r\nHost: x\r\nCookie: ${ownerCookie}\r\nConnection: close\r\n\r\n`, 2500);
+      assert.equal(trace.received.includes(ownerCookie), false, "TRACE echoed the cookie back");
+      // A header cannot turn a POST into a GET.
+      const override = await hit(`${base}/api/admin`, { method: "POST", headers: { "X-HTTP-Method-Override": "GET", Cookie: ownerCookie } });
+      assert.equal(override.status, 405);
+      await alive("odd verbs");
+    });
+
+    await t.test("cookie tricks: duplicates, padding and case never promote a bad token", async () => {
+      const token = ownerCookie.split("=")[1];
+      const bad = [
+        `__Host-token=garbage; ${ownerCookie}`, // first one wins, and it is garbage
+        `__Host-token=; ${ownerCookie}`,
+        `__Host-Token=${token}`,
+        `__host-token=${token}`,
+        `__Secure-token=${token}`,
+        `__Host-token="${token}"`,
+        `__Host-token=${token}.`,
+        `__Host-token=${token.slice(0, -2)}`,
+        `__Host-token=${token.replace(/\.[^.]+$/, "")}`,
+        `x=1;__Host-token =${token.toUpperCase()}`,
+      ];
+      for (const cookie of bad) {
+        const r = await hit(`${base}/api/admin`, { headers: { Cookie: cookie } });
+        assert.equal(r.status, 401, `accepted: ${cookie.slice(0, 40)}`);
+        assertNoLeak(r, "cookie trick");
+      }
+    });
+
+    await t.test("signature probing: changing any sampled character of a real token invalidates it", async () => {
+      const token = ownerCookie.split("=")[1];
+      for (let i = 0; i < token.length - 1; i += 7) {
+        if (token[i] === ".") continue;
+        const flipped = token.slice(0, i) + (token[i] === "A" ? "B" : "A") + token.slice(i + 1);
+        const r = await hit(`${base}/api/admin`, { headers: { Cookie: `__Host-token=${flipped}` } });
+        assert.equal(r.status, 401, `flip at ${i} accepted`);
+      }
+    });
+
+    await t.test("connection hoarding: 300 idle keep-alive sockets do not slow a visitor", async () => {
+      const sockets = [];
+      for (let i = 0; i < 300; i += 1) {
+        const s = net.connect(port, "127.0.0.1");
+        s.on("error", () => {});
+        s.on("connect", () => s.write("GET /health HTTP/1.1\r\nHost: x\r\n\r\n"));
+        sockets.push(s);
+      }
+      await new Promise((r) => setTimeout(r, 500));
+      await alive("300 hoarded connections");
+      const owner = await adminView(base, ownerCookie);
+      assert.equal(owner.status, 200);
+      for (const s of sockets) s.destroy();
+    });
+
+    await t.test("decoy flood: hammering the decoys cannot slow the real app", async () => {
+      let worst = 0;
+      for (let wave = 0; wave < 6; wave += 1) {
+        const batch = [];
+        for (let i = 0; i < 50; i += 1) {
+          batch.push(hit(`${base}${DECOYS[i % DECOYS.length]}`));
+        }
+        for (const r of await Promise.all(batch)) {
+          worst = Math.max(worst, r.ms);
+          assert.equal(r.status, 200);
+          assertNoLeak(r, "decoy flood");
+        }
+      }
+      assert.ok(worst < RULE_LIMIT_MS, `decoy flood worst ${worst.toFixed(0)}ms`);
+      await alive("decoy flood");
+      // Tripwire output is one summary line per window, not one line per hit.
+      assert.ok((srv.logs().match(/\[honeypot\]/g) || []).length <= 3);
+    });
+
+    await t.test("nothing unexpected was logged", async () => {
+      assert.equal(/Uncaught exception|Unhandled rejection|Request failed/.test(srv.logs()), false, srv.logs());
+    });
   } finally {
     await srv.stop();
   }

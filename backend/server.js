@@ -16,6 +16,9 @@ const password = env.ADMIN_PASSWORD || DEFAULT_PASSWORD;
 // nothing and would let one person lock every verifier out, so it is off.
 // It switches on by itself once a real password is set (Phase 2).
 const loginLimit = password === DEFAULT_PASSWORD ? Infinity : 50;
+// Decoy endpoints, each clearly labelled as a decoy (details in app.js).
+// HONEYPOT=off removes them.
+const honeypot = !['off', 'false', '0', 'no'].includes(String(env.HONEYPOT || '').toLowerCase());
 const secret = env.SECRET || 'defaultSecret';
 const allowedOrigins = (env.ALLOWED_ORIGINS || 'http://localhost:5500,http://127.0.0.1:5500')
   .split(',')
@@ -37,7 +40,7 @@ if (secret.length >= 20 || /\s/.test(secret)) {
   console.warn('WARNING: SECRET must be fewer than 20 characters with no spaces.');
 }
 
-const app = createApp({ password, secret, jwtKey, allowedOrigins, trustedProxyHops, loginLimit });
+const app = createApp({ password, secret, jwtKey, allowedOrigins, trustedProxyHops, loginLimit, honeypot });
 
 // connectionsCheckingInterval: Node only enforces the timeouts below when it
 // sweeps its connections, and the default sweep is every 30 s. Sweeping every
@@ -90,4 +93,5 @@ server.listen(port, '0.0.0.0', () => {
   console.log(`Allowed frontend origins: ${allowedOrigins.join(', ')}`);
   console.log(`Trusted proxy hops: ${trustedProxyHops}`);
   console.log(`Login rate limit: ${loginLimit === Infinity ? 'off (default password in use)' : `${loginLimit} per 10 s per address`}`);
+  console.log(`Decoy endpoints: ${honeypot ? 'on' : 'off'}`);
 });

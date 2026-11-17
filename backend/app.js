@@ -12,6 +12,14 @@ const COOKIE_NAME = '__Host-token';
 const MAX_BODY_BYTES = 1024;
 const RATE_WINDOW_MS = 10_000;
 
+// Decoy endpoints: paths that scanners and AI agents go looking for (/.env,
+// /api/debug ...). They hold nothing real, and every one of them says so in
+// plain words, so nobody, including an instructor, can mistake them for a
+// real leak. Their job is to waste an automated attacker's time and to show
+// us in the log that someone is probing.
+const DECOY_NOTICE = 'HONEYPOT DECOY - nothing here is real';
+const DECOY_VALUE = 'DECOY-not-real';
+
 /**
  * Fixed-window counter per client IP. The whole table is wiped every window,
  * so memory stays bounded no matter how many addresses hit us.
@@ -92,10 +100,22 @@ function createApp(config) {
     // floods only: normal requests cost microseconds and need no throttling.
     requestLimit = 20_000,
     loginLimit = 50,
+    // Decoy endpoints (see the note at the top of this file).
+    honeypot = true,
   } = config;
 
   const allowRequest = createRateLimiter(requestLimit, RATE_WINDOW_MS);
   const allowLogin = createRateLimiter(loginLimit, RATE_WINDOW_MS);
+
+  // Tripwire log: which decoys were requested and how often, printed at most
+  // once per window so a flood of probes cannot flood the log.
+  const decoyHits = new Map();
+  setInterval(() => {
+    if (decoyHits.size === 0) return;
+    const summary = [...decoyHits].map(([name, count]) => `${name} x${count}`).join(', ');
+    decoyHits.clear();
+    console.log(`[honeypot] decoys requested: ${summary}`);
+  }, RATE_WINDOW_MS).unref();
 
   // Constant-time string comparison. Both sides are HMACed with a random
   // per-process key first, so the buffers are always the same length and the
@@ -155,6 +175,17 @@ function createApp(config) {
     res.end(req.method === 'HEAD' ? undefined : text);
   }
 
+  /** Plain-text response. Only the decoy files use it. */
+  function sendText(req, res, status, text) {
+    res.writeHead(status, {
+      'Content-Type': 'text/plain; charset=utf-8',
+      'Cache-Control': 'no-store',
+      'X-Content-Type-Options': 'nosniff',
+      'Content-Length': Buffer.byteLength(text),
+    });
+    res.end(req.method === 'HEAD' ? undefined : text);
+  }
+
   /** Returns the JWT payload for this request, or null if not logged in. */
   function authenticate(req) {
     return jwt.verify(readCookie(req, COOKIE_NAME), jwtKey);
@@ -201,6 +232,48 @@ function createApp(config) {
     'GET /api/page1': (req, res) => handleProtected(req, res, () => ({ title: 'Page 1' })),
     'GET /api/page2': (req, res) => handleProtected(req, res, () => ({ title: 'Page 2' })),
   };
+
+  // ---- Honeypot: decoy endpoints -----------------------------------------
+  // Our own frontend never requests any of these. Each one is labelled as a
+  // decoy and points to the next (robots -> debug -> config -> secret), so an
+  // automated attacker spends requests on leads that go nowhere.
+  // All answer instantly: a slow trap would hold attacker connections open
+  // and could make us slow or unreachable, which is how we would lose.
+  const decoyRoutes = {
+    'GET /robots.txt': (req, res) => sendText(req, res, 200, [
+      `# ${DECOY_NOTICE}`,
+      'User-agent: *',
+      'Disallow: /api/debug',
+      'Disallow: /backup.json',
+      'Disallow: /.env',
+      '',
+    ].join('\n')),
+    'GET /.env': (req, res) => sendText(req, res, 200, [
+      `# ${DECOY_NOTICE}`,
+      `ADMIN_PASSWORD=${DECOY_VALUE}`,
+      `SECRET=${DECOY_VALUE}`,
+      `JWT_KEY=${DECOY_VALUE}`,
+      '',
+    ].join('\n')),
+    'GET /backup.json': (req, res) => send(req, res, 200, {
+      notice: DECOY_NOTICE,
+      password: DECOY_VALUE,
+      secret: DECOY_VALUE,
+    }),
+    'GET /api/debug': (req, res) => send(req, res, 200, { notice: DECOY_NOTICE, next: '/api/config' }),
+    'GET /api/config': (req, res) => send(req, res, 200, { notice: DECOY_NOTICE, next: '/api/secret' }),
+    'GET /api/secret': (req, res) => send(req, res, 200, { notice: DECOY_NOTICE, secret: DECOY_VALUE }),
+  };
+  if (honeypot) {
+    for (const [key, handler] of Object.entries(decoyRoutes)) {
+      const path = key.split(' ')[1];
+      routes[key] = (req, res) => {
+        decoyHits.set(path, (decoyHits.get(path) || 0) + 1);
+        return handler(req, res);
+      };
+    }
+  }
+
   const knownPaths = new Set(Object.keys(routes).map((key) => key.split(' ')[1]));
 
   async function route(req, res) {
@@ -242,4 +315,4 @@ function createApp(config) {
   };
 }
 
-module.exports = { createApp, COOKIE_NAME };
+module.exports = { createApp, COOKIE_NAME, DECOY_NOTICE };

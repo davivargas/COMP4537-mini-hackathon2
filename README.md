@@ -57,13 +57,25 @@ Why each cookie attribute:
 
 Not a slow password hash such as bcrypt, on purpose: there is no password database to protect, and a slow hash would let login requests burn our CPU until we exceed the 5 s limit.
 
+## Decoy endpoints
+
+Scanners and AI agents go looking for paths like `/.env` or `/api/debug`. The API answers six of them with decoys: `/robots.txt`, `/.env`, `/backup.json`, `/api/debug`, `/api/config`, `/api/secret`.
+
+- **Every decoy says it is one.** Each response contains the line `HONEYPOT DECOY - nothing here is real`, and every value in it is the text `DECOY-not-real`. Nobody, an instructor included, can mistake one for a real leak.
+- **They hold nothing real** and our frontend never requests them. A test checks that the real password, secret and signing key never appear in any of them.
+- **They point to each other** (`/robots.txt` → `/api/debug` → `/api/config` → `/api/secret`), so an automated attacker spends requests on leads that go nowhere.
+- **They answer instantly.** A slow trap would hold attackers' connections open and could make our own server slow or unreachable.
+- **They are a tripwire.** The API log prints one line per 10 s listing which decoys were requested, for example `[honeypot] decoys requested: /.env x3, /api/debug x1`, so we can see when someone is probing.
+
+Logging in is not part of this: every wrong password, the old `BCIT12` included, gets the normal `401` error. Setting `HONEYPOT=off` on the API host removes the decoys.
+
 What code cannot defend: the hosting provider going down or blocking us, and anyone leaking the password or secret (Discord, screen share, a screenshot of the dashboard).
 
 ## Run locally
 
 ```
 cd backend
-npm test          # 34 tests, no install needed
+npm test          # 46 tests, no install needed
 npm run dev       # API on http://localhost:3000
 ```
 
